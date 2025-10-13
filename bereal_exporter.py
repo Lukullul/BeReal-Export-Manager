@@ -4,6 +4,7 @@ from exiftool import ExifToolHelper as et
 from shutil import copy2 as cp
 from datetime import datetime as dt
 import argparse
+from PIL import Image
 
 
 
@@ -94,12 +95,25 @@ class BeRealExporter:
 
   def export_img(self, old_img_name: str, img_name: str, img_dt: dt, img_location=None):
     """
-    Makes a copy of the image and adds EXIF tags to the image.
+    Makes a copy of the image or video and adds EXIF tags to supported formats.
     """
     self.verbose_msg(f"Export {old_img_name} image to {img_name}")
 
-    if os.path.isfile(old_img_name):
-      cp(old_img_name, img_name)
+    if not os.path.isfile(old_img_name):
+      self.verbose_msg(f"File not found: {old_img_name}")
+      return
+
+    ext = os.path.splitext(old_img_name)[1].lower()
+
+    # Video and image formats supported
+    video_exts = [".mp4", ".mov", ".avi", ".mkv", ".m4v", ".hevc", ".webm"]
+    image_exts = [".jpg", ".jpeg", ".tif", ".tiff", ".png", ".heic", ".webp"]
+
+    cp(old_img_name, img_name)
+    self.verbose_msg(f"Copied file ({ext})")
+
+    # For .webp images only, try to add EXIF metadata
+    if ext == ".webp":
       tags = {"DateTimeOriginal": img_dt.strftime("%Y:%m:%d %H:%M:%S")}
       if img_location:
           self.verbose_msg(f"Add metadata to image:\n - DateTimeOriginal={img_dt}\n - GPS=({img_location['latitude']}, {img_location['longitude']})")
@@ -109,15 +123,13 @@ class BeRealExporter:
           })
       else:
           self.verbose_msg(f"Add metadata to image:\n - DateTimeOriginal={img_dt}")
- 
-      if self.exiftool_path:
-        et(executable=self.exiftool_path).set_tags(img_name, tags=tags, params=["-P", "-overwrite_original"])
-      else:
-        et().set_tags(img_name, tags=tags, params=["-P", "-overwrite_original"])
-    else:
-      self.verbose_msg(f"File {old_img_name} not found. Skipping this image.")
 
-
+      try:
+        with et(executable=self.exiftool_path) if self.exiftool_path else et() as exif:
+          exif.set_tags(img_name, tags=tags, params=["-P", "-overwrite_original"])
+      except Exception as e:
+        self.verbose_msg(f"Could not write EXIF to {img_name}: {e}")
+  
   def export_memories(self, memories: list):
     """
     Exports all memories from the Photos/post directory to the corresponding output folder.
@@ -138,7 +150,16 @@ class BeRealExporter:
 
       if self.time_span[0] <= memory_dt <= self.time_span[1]:
         for img_name, type in zip(img_names, types):
-          old_img_name = os.path.join(self.bereal_path, f"Photos/post/{self.get_img_filename(memory[type[0]])}")
+          
+          # Recreating local photo path from json file
+          json_path = memory[type[0]]['path'].lstrip("/")
+          parts = json_path.split("/")
+          if len(parts) > 3 and parts[0] == "Photos":
+              clean_path = os.path.join(parts[0], parts[2], *parts[3:])
+          else:
+              clean_path = json_path  # fallback
+          old_img_name = os.path.join(self.bereal_path, clean_path)
+          
           self.verbose_msg(f"Export Memory nr {i} {type[0]}:")
           if 'location' in memory:
             self.export_img(old_img_name, img_name, memory_dt, memory['location'])
